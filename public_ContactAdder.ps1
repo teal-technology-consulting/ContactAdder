@@ -4,12 +4,20 @@ $debuggingon = $false
 #Define variables:
 $exportcsv = "$PSScriptRoot\csvgalexport.csv"
 $delimiter = ";"
+[int]$keeplatestlogcount = 5
 [string]$Indentification = "TealContactAdder"
 [string]$onlinetarget = "www.teal-consulting.de"
 [string]$tcptestprotocol = "http"
 [string]$ExportCompanyName = "Teal Technology Consutling GmbH"
 [string]$matchmail = "*@teal-consulting.de"
 [string]$matchcontactfolder = "\\\\[a-z|A-Z]*.[a-z|A-Z]*\@teal-consulting.de\\[Contacts|Kontakte]"
+
+#Define Logging:
+#Logging
+$LogfileBasePath = $PSScriptRoot + "\log\"
+$LogfileDate = (Get-Date).ToString("ddMMyyyy-HHmm")
+$logname = $(($MyInvocation.MyCommand.Name).Split(".")[0])
+$logfile = $LogfileBasePath + $logname +"_"+$LogfileDate+".log"
 
 $propertiestoupdate=@'
 FirstName
@@ -24,48 +32,36 @@ BusinessAddressCity
 
 #endregion variables
 
-#region prepare script execution
-write-host "Script start ..."
+#region functions
 
-$testtcpresult = Test-NetConnection -ComputerName $onlinetarget -CommonTCPPort $tcptestprotocol
+function Write-Log {
+     [CmdletBinding()]
+     param(
+         [string]$LogFile,
+         [string]$Classification,
+         [string]$Message
+     )
 
-if (!($testtcpresult.tcptestsucceeded)){
-    Write-host  "System is offline - please establish an internet connection!"
-    exit 99
+    $message = "$((Get-Date).ToString("ddMMyyyy-HHmmssffff"))`t$($Classification.ToUpper())`t$Message"
+    [System.IO.File]::AppendAllText($LogFile, "$message`r`n",[System.Text.UTF8Encoding]::UTF8)
     }
 
-$usertestsucceeded = $false
-[array]$testuserresult = @()
-
-#endregion prepare script execution
-
-#region contact export and import.
-#Connection to outlook:
-
-try {
-    write-host "Connect to outlook ..."
-    [Microsoft.Office.Interop.Outlook.Application] $ConnectionToOutlook = New-Object -ComObject Outlook.Application  -ea 1
-    $contactstoexport = $ConnectionToOutlook.Session.GetGlobalAddressList().AddressEntries
-    write-host "Outlook connection created."
-    }
-catch {
-    write-host "Outlook connection not created."
+function delete-oldlogs {
+    param (
+        [int]$keeplatestlogcount,
+        [string]$logpath,
+        [string]$logname
+        )
+    [array]$keeplogs = $null
+    $keeplogs = (Get-ChildItem $logpath -filter "$logname*.log" | sort LastWriteTime | select -last $keeplatestlogcount).fullname
+    foreach ($logtodelete in gci $logpath -filter "$logname*.log")
+        {
+        if ($keeplogs -notcontains $logtodelete.fullname){
+            Remove-Item $logtodelete.fullname
+            }
+        }
     }
 
-#Connect to the contacts default folder in outlook. (Default folder id for Contacts of default account is 10)
-try {
-    write-host "Connect to the contacts default folder in outlook. ..."
-    $defaultcontactsfolder = $ConnectionToOutlook.session.GetDefaultFolder(10)
-    $namespace = $ConnectionToOutlook.GetNamespace("MAPI")
-    $outlookfolders = $namespace.folders
-    $outlooksubfolders = ""
-    $folder = ""
-    write-host "Connected to the contacts default folder in outlook. ..."
-    write-host "Contactsfolder: ... $($defaultcontactsfolder.FullFolderPath)"
-    }
-catch{
-    write-host "Could not connect to the contacts default folder in outlook. ..."
-    }
 
 function Add-Contact 
 {
@@ -98,7 +94,7 @@ param ($item,$contact,$properties)
     foreach ($property in $properties){
         if ($property -like "BusinessTelephoneNumber"){
             if (((($item.$($property).ToString()) -replace "\s","") -replace "\+","") -notmatch ((($contact.$($property).ToString()) -replace "\s","") -replace "\+","")){
-                if ($debuggingon){write-host "$Property - OLDvalue:$item.$($property) NEWValue: $contact.$($property)"}
+                if ($debuggingon){Write-Log -LogFile $logfile -Classification "DegubInfo" -Message  "$Property - OLDvalue:$item.$($property) NEWValue: $contact.$($property)"}
                 $item.$($property) = $contact.$($property)
                 $item.Save()
                 Start-Sleep -Seconds 10
@@ -107,7 +103,7 @@ param ($item,$contact,$properties)
             }
         if ($property -like "MobileTelephoneNumber"){
             if (((($item.$($property).ToString()) -replace "\s","") -replace "\+","") -notmatch ((($contact.$($property).ToString()) -replace "\s","") -replace "\+","")){
-                if ($debuggingon){write-host "$Property - OLDvalue:$item.$($property) NEWValue: $contact.$($property)"}
+                if ($debuggingon){Write-Log -LogFile $logfile -Classification "DebugInfo" -Message "$Property - OLDvalue:$item.$($property) NEWValue: $contact.$($property)"}
                 $item.$($property) = $contact.$($property)
                 $item.Save()
                 Start-Sleep -Seconds 10
@@ -115,15 +111,64 @@ param ($item,$contact,$properties)
             continue
             }
         if ($item.$($property) -notlike $contact.$($property)){
-            if ($debuggingon){write-host "$Property - OLDvalue:$item.$($property) NEWValue: $contact.$($property)"}
+            if ($debuggingon){Write-Log -LogFile $logfile -Classification "debuginfo" -Message  "$Property - OLDvalue:$item.$($property) NEWValue: $contact.$($property)"}
             $item.$($property) = $contact.$($property)
             $item.Save()
             Start-Sleep -Seconds 10
             continue
             }
-        write-host "Nothing to Update: ... $property"
+        Write-Log -LogFile $logfile -Classification "info" -Message "Nothing to Update: ... $property"
         }
 }
+
+#endregion functions
+
+#region prepare script execution
+delete-oldlogs -keeplatestlogcount $keeplatestlogcount -logpath $LogfileBasePath -logname $logname
+Write-Host "Script start ..."
+Write-Log -LogFile $logfile -Classification "INFO" -Message "Script start ..."
+
+$testtcpresult = Test-NetConnection -ComputerName $onlinetarget -CommonTCPPort $tcptestprotocol
+
+if (!($testtcpresult.tcptestsucceeded)){
+    Write-Log -LogFile $logfile -Classification "error" -Message "System is offline - please establish an internet connection!"
+    exit 99
+    }
+
+$usertestsucceeded = $false
+[array]$testuserresult = @()
+
+#endregion prepare script execution
+
+#region contact export and import.
+#Connection to outlook:
+
+try {
+    Write-Log -LogFile $logfile -Classification "info" -Message "Connect to outlook ..."
+    [Microsoft.Office.Interop.Outlook.Application] $ConnectionToOutlook = New-Object -ComObject Outlook.Application  -ea 1
+    $contactstoexport = $ConnectionToOutlook.Session.GetGlobalAddressList().AddressEntries
+    Write-Log -LogFile $logfile -Classification "info" -Message  "Outlook connection created."
+    }
+catch {
+    Write-Log -LogFile $logfile -Classification "error" -Message "Outlook connection not created."
+    }
+
+#Connect to the contacts default folder in outlook. (Default folder id for Contacts of default account is 10)
+try {
+    Write-Log -LogFile $logfile -Classification "info" -Message "Connect to the contacts default folder in outlook. ..."
+    $defaultcontactsfolder = $ConnectionToOutlook.session.GetDefaultFolder(10)
+    $namespace = $ConnectionToOutlook.GetNamespace("MAPI")
+    $outlookfolders = $namespace.folders
+    $outlooksubfolders = ""
+    $folder = ""
+    Write-Log -LogFile $logfile -Classification "info" -Message "Connected to the contacts default folder in outlook. ..."
+    Write-Log -LogFile $logfile -Classification "info" -Message "Contactsfolder: ... $($defaultcontactsfolder.FullFolderPath)"
+    }
+catch{
+    Write-Log -LogFile $logfile -Classification "error" -Message "Could not connect to the contacts default folder in outlook. ..."
+    }
+
+
 
 #Test if old export exists, if so it get deleted.
 if (Test-path $exportcsv) {
@@ -133,7 +178,7 @@ if (Test-path $exportcsv) {
 
 #Export of contacts with all possible values:
 
-write-host "Export contacts ..."
+Write-Log -LogFile $logfile -Classification "info" -Message "Export contacts ..."
 
 foreach ($contacttoexport in $contactstoexport){
     #Verify contact is not empty. If empty process next contact.
@@ -166,7 +211,7 @@ foreach ($contacttoexport in $contactstoexport){
         }
 
     catch {
-        write-host "ERROR: Failed to create export object ..."
+        Write-Log -LogFile $logfile -Classification "error" -Message  "ERROR: Failed to create export object ..."
         }
 
     #Identify if the contact is a contact to export, defined by the Busniess Telephone number.
@@ -175,7 +220,7 @@ foreach ($contacttoexport in $contactstoexport){
 
     #Create object for CSV export. And export the object to csv. As append is used, it need to be a new file.
     try {
-       write-host "Export contacts to csv (only contacts which are from type Address Entry User) ... "
+       Write-Log -LogFile $logfile -Classification "info" -Message "Export contacts to csv (only contacts which are from type Address Entry User) ... "
         [PSCustomobject]@{
             FirstName = $firstname
             LastName = $lastname
@@ -194,27 +239,27 @@ foreach ($contacttoexport in $contactstoexport){
             CompanyName = $CompanyName
             OfficeLocation = $OfficeLocation
             } | Export-Csv $exportcsv -encoding Default -Delimiter $delimiter -NoTypeInformation -Append
-        write-host "Export object to csv ..."
+        Write-Log -LogFile $logfile -Classification "info" -Message "Export object to csv ..."
         }
     catch {
-        write-host "ERROR:  Failed to export object to csv ..."
+        Write-Log -LogFile $logfile -Classification "error" -Message "ERROR:  Failed to export object to csv ..."
         }
     }
 
 #Import exportet contact to outlook default contact folder.
 if ($defaultcontactsfolder.FolderPath -match $matchcontactfolder){
-    write-host "Get contact folder ..."
+    Write-Log -LogFile $logfile -Classification "info" -Message "Get contact folder ..."
     $DefaultAddressBookID = $defaultcontactsfolder.EntryID
     $DefaultAddressBookNamespace = $namespace.GetFolderFromID($DefaultAddressBookID)
     $folder = $DefaultAddressBookNamespace
-    if ($debuggingon) {write-host "Contact folder: ... $($DefaultAddressBookNamespace.FullFolderPath)"}
-    else {write-host "Contact folder: ... "}
+    if ($debuggingon) {Write-Log -LogFile $logfile -Classification "DebugInfo" -Message "Contact folder: ... $($DefaultAddressBookNamespace.FullFolderPath)"}
+    else {Write-Log -LogFile $logfile -Classification "info" -Message "Contact folder: ... "}
     }
 
 #get existing contacts.
 Start-Sleep -Seconds 10
 $existingcontacts = @()
-write-host "Start exporting all existing $matchmail contacts from local addressbook. ..."
+Write-Log -LogFile $logfile -Classification "info" -Message "Start exporting all existing $matchmail contacts from local addressbook. ..."
 foreach ($item in $folder.items | Where-Object {$_.User1 -like $matchmail}){
     Start-Sleep -Seconds 2
     $existingcontacts += $item.User1
@@ -222,7 +267,7 @@ foreach ($item in $folder.items | Where-Object {$_.User1 -like $matchmail}){
 
 $existingcontactcount = 1
 foreach ($existingcontact in $existingcontacts) {
-    if ($debuggingon) {write-host "Existing contatc $existingcontactcount of $($existingcontacts.count): $($existingcontact)"}
+    if ($debuggingon) {Write-Log -LogFile $logfile -Classification "DebugInfo" -Message "Existing contatc $existingcontactcount of $($existingcontacts.count): $($existingcontact)"}
     $existingcontactcount ++
     }
 
@@ -230,7 +275,7 @@ foreach ($existingcontact in $existingcontacts) {
 if (Test-path $exportcsv) {
     $ContactsImport = Import-csv $exportcsv -Delimiter $delimiter
 
-    write-host "Start creating or updating contacts ..."
+    Write-Log -LogFile $logfile -Classification "info" -Message "Start creating or updating contacts ..."
     if ($folder){
         
         foreach ($contacttoimport in $contactsimport) {
@@ -243,24 +288,24 @@ if (Test-path $exportcsv) {
 
             if ($contactexists) {
                 try {
-                    if ($debuggingon) {write-host "Update contact ... $($contacttoimport.Email1Address)"}
-                    else {write-host "Update contact ... "}
+                    if ($debuggingon) {Write-Log -LogFile $logfile -Classification "debuginfo" -Message "Update contact ... $($contacttoimport.Email1Address)"}
+                    else {Write-Log -LogFile $logfile -Classification "info" -Message "Update contact ... "}
                     Update-Contact $updatecontact $contacttoimport $propertiestoupdate
-                    write-host "Update contact ..."
+                    Write-Log -LogFile $logfile -Classification "info" -Message "Update contact ..."
                     }
                     catch{
-                        write-host "Failed to Update contact ..."
+                        Write-Log -LogFile $logfile -Classification "info" -Message "Failed to Update contact ..."
                         }
                  }
             if (!($contactexists)) {
                 try {
-                    if ($debuggingon) {write-host "Create contact ... $($contacttoimport.Email1Address)"}
-                    else {write-host "Create contact ... "}
+                    if ($debuggingon) {Write-Log -LogFile $logfile -Classification "debuginfo" -Message "Create contact ... $($contacttoimport.Email1Address)"}
+                    else {Write-Log -LogFile $logfile -Classification "info" -Message "Create contact ... "}
                     Add-Contact $folder $contacttoimport 
-                    write-host "Create contact ..."
+                    Write-Log -LogFile $logfile -Classification "info" -Message "Create contact ..."
                     }
                 catch{
-                    write-host "Failed to Create contact ..."
+                   Write-Log -LogFile $logfile -Classification "error" -Message "Failed to Create contact ..."
                     }
                 }
         }
@@ -272,5 +317,5 @@ if (Test-path $exportcsv) {
     }
 
 write-host "Finished script deleting csv ..."
-
+Write-Log -LogFile $logfile -Classification "info" -Message "Finished script deleting csv ..."
 exit 0
