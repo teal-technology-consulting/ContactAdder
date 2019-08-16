@@ -246,7 +246,7 @@ foreach ($contacttoexport in $contactstoexport){
         }
     }
 
-#Import exportet contact to outlook default contact folder.
+#Import exported contact to outlook default contact folder.
 if ($defaultcontactsfolder.FolderPath -match $matchcontactfolder){
     Write-Log -LogFile $logfile -Classification "info" -Message "Get contact folder ..."
     $DefaultAddressBookID = $defaultcontactsfolder.EntryID
